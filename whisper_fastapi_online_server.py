@@ -111,13 +111,14 @@ async def websocket_endpoint(websocket: WebSocket):
     print("Loading online.")
     online = online_factory(args, asr, tokenizer)
     print("Online loaded.")
+    last_english_time = time()
 
     if args.diarization:
         diarization = DiartDiarization(SAMPLE_RATE)
 
     # Continuously read decoded PCM from ffmpeg stdout in a background task
     async def ffmpeg_stdout_reader():
-        nonlocal pcm_buffer
+        nonlocal pcm_buffer, last_english_time
         loop = asyncio.get_event_loop()
         full_transcription = ""
         beg = time()
@@ -160,14 +161,17 @@ async def websocket_endpoint(websocket: WebSocket):
                         "text": trans,
                         "speaker": "0"
                         })
-                    
+
+                    if trans and is_english(trans):
+                        last_english_time = time()
+
                     full_transcription += trans
 
                     # Check if the transcription is in English
                     if not is_english(trans):
                         continue
 
-                    
+
                     if args.vac:
                         buffer = online.online.concatenate_tsw(
                             online.online.transcript_buffer.buffer
@@ -214,6 +218,18 @@ async def websocket_endpoint(websocket: WebSocket):
 
     stdout_reader_task = asyncio.create_task(ffmpeg_stdout_reader())
 
+    async def monitor_silence():
+        nonlocal last_english_time
+        while True:
+            await asyncio.sleep(1)
+            if time() - last_english_time > 5:
+                print("No English detected for 5 seconds. Closing connection.")
+                await websocket.send_json({"error": "Connection terminated due to inactivity."})
+                await websocket.close()
+                break
+
+    silence_task = asyncio.create_task(monitor_silence())
+
     try:
         while True:
             # Receive incoming WebM audio chunks from the client
@@ -233,6 +249,7 @@ async def websocket_endpoint(websocket: WebSocket):
         except:
             pass
         stdout_reader_task.cancel()
+        silence_task.cancel()
 
         try:
             ffmpeg_process.stdout.close()
