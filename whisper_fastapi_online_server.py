@@ -111,7 +111,7 @@ async def websocket_endpoint(websocket: WebSocket):
     print("Loading online.")
     online = online_factory(args, asr, tokenizer)
     print("Online loaded.")
-    last_english_time = time()
+    last_english_time = None
 
     if args.diarization:
         diarization = DiartDiarization(SAMPLE_RATE)
@@ -155,15 +155,16 @@ async def websocket_endpoint(websocket: WebSocket):
                     beg_trans, end_trans, trans = online.process_iter()
                     
                     if trans:
+                        if is_english(trans):
+                            last_english_time = time()  # Update only when English is detected
+                        if last_english_time is None:
+                            last_english_time = time()  # Start the timer on first transcription
                         chunk_history.append({
                         "beg": beg_trans,
                         "end": end_trans,
                         "text": trans,
                         "speaker": "0"
                         })
-
-                    if trans and is_english(trans):
-                        last_english_time = time()
 
                     full_transcription += trans
 
@@ -222,7 +223,7 @@ async def websocket_endpoint(websocket: WebSocket):
         nonlocal last_english_time
         while True:
             await asyncio.sleep(1)
-            if time() - last_english_time > 5:
+            if last_english_time and time() - last_english_time > 5:
                 print("No English detected for 5 seconds. Closing connection.")
                 await websocket.send_json({"error": "Connection terminated due to inactivity."})
                 await websocket.close()
